@@ -1,8 +1,8 @@
 (require 'direx)
-(require 'esa-cui)
+(require 'esal)
 (require 'json)
-(require 'markdown-mode)
 (require 'log4e)
+(require 'dired)
 
 
 (log4e:deflogger "esa-direx" "%t [%l] %m" "%H:%M:%S" '((fatal . "fatal")
@@ -19,20 +19,30 @@
   :group 'direx
   :prefix "esa-direx:")
 
-(defcustom esa-direx:team-face 'dired-directory
-  "Face for team.")
+(defface esa-direx:team-face
+  '((t (:inherit dired-directory)))
+  "Face for team."
+  :group 'esa-direx)
 
-(defcustom esa-direx:category-face 'dired-directory
-  "Face for category.")
+(defface esa-direx:category-face
+  '((t (:inherit dired-directory)))
+  "Face for category."
+  :group 'esa-direx)
 
-(defcustom esa-direx:shipped-post-face nil
-  "Face for shipped post.")
+(defface esa-direx:shipped-post-face
+  nil
+  "Face for shipped post."
+  :group 'esa-direx)
 
-(defcustom esa-direx:wip-post-face 'dired-ignored
-  "Face for wip post.")
+(defface esa-direx:wip-post-face
+  '((t (:inherit dired-ignored)))
+  "Face for wip post."
+  :group 'esa-direx)
 
-(defcustom esa-direx:locked-post-face 'dired-warning-face
-  "Face for locked post.")
+(defface esa-direx:locked-post-face
+  '((t (:inherit dired-warning)))
+  "Face for locked post."
+  :group 'esa-direx)
 
 
 (defclass esa-direx:element (direx:tree)
@@ -121,8 +131,8 @@
   (esa-direx::collect-children (esa-direx:full-name category)))
 
 (defun esa-direx::collect-children (path)
-  (esa-cui:cd path)
-  (cl-loop for line in (split-string (esa-cui:ls) "\n")
+  (esal-cd path)
+  (cl-loop for line in (split-string (esal-ls) "\n")
            if (string-match "/\\'" line)
            collect (esa-direx::make-category
                     (replace-regexp-in-string "/\\'" "" line))
@@ -139,20 +149,20 @@
   (make-instance 'esa-direx:category :name name))
 
 (defun esa-direx::make-post (category-path number name)
-  (let* ((json-string (esa-cui:cat (concat category-path "/" number)
-                                   :json t
-                                   :indent nil))
+  (let* ((json-string (esal-cat (concat category-path "/" number)
+                                :json t
+                                :indent nil))
          (post-stats (json-read-from-string json-string)))
     (make-instance 'esa-direx:post
                    :name name
                    :number number
-                   :wip (assoc-default 'wip post-stats)
-                   :locked (assoc-default 'locked post-stats)
+                   :wip (not (eq (assoc-default 'wip post-stats) json-false))
+                   :locked (not (eq (assoc-default 'locked post-stats) json-false))
                    :tags (assoc-default 'tags post-stats)
                    :url (assoc-default 'url post-stats)
-                   :local-path (assoc-default 'local-path post-stats)
-                   :created-by (assoc-default 'created-by post-stats)
-                   :updated-by (assoc-default 'updated-by post-stats))))
+                   :local-path (assoc-default 'local_path post-stats)
+                   :created-by (assoc-default 'created_by post-stats)
+                   :updated-by (assoc-default 'updated_by post-stats))))
 
 (defmethod direx:generic-find-item ((item esa-direx:team-item) not-this-window)
   (direx:toggle-item item))
@@ -175,7 +185,7 @@
 (defmethod direx:generic-find-item ((item esa-direx:post-item) not-this-window)
   (let* ((post (direx:item-tree item))
          (filename (esa-direx:post-local-path post)))
-    (esa-cui:lock (esa-direx:post-number post))
+    (esal-lock (esa-direx:post-number post))
     (esa-direx::setup-post-buffer (if not-this-window
                                       (find-file-other-window filename)
                                     (find-file filename))
@@ -184,7 +194,7 @@
 (defmethod direx:generic-view-item ((item esa-direx:post-item) not-this-window)
   (let* ((post (direx:item-tree item))
          (filename (esa-direx:post-local-path post)))
-    (esa-cui:lock (esa-direx:post-number post))
+    (esal-lock (esa-direx:post-number post))
     (esa-direx::setup-post-buffer (if not-this-window
                                       (view-file-other-window filename)
                                     (view-file filename))
@@ -193,7 +203,7 @@
 (defmethod direx:generic-display-item ((item esa-direx:post-item) not-this-window)
   (let* ((post (direx:item-tree item))
          (filename (esa-direx:post-local-path post)))
-    (esa-cui:lock (esa-direx:post-number post))
+    (esal-lock (esa-direx:post-number post))
     (esa-direx::setup-post-buffer (display-buffer (find-file-noselect filename))
                                   post)))
 
@@ -202,7 +212,7 @@
   (esa-direx--debug "Start setup post buffer : number[%s] buf[%s]"
                     (esa-direx:post-number post) buf)
   (with-current-buffer buf
-    (esa-cui:set-active-team (esa-direx:element-name (esa-direx:team-of post)) t)
+    (esal-set-active-team (esa-direx:element-name (esa-direx:team-of post)) t)
     (set (make-local-variable 'esa-direx::post) post)
     (setq-local revert-buffer-function 'esa-direx:revert-current-post)
     (local-set-key [remap save-buffer] 'esa-direx:update-current-post)
@@ -218,8 +228,8 @@
         (with-current-buffer (get-buffer-create bufnm)
           (esa-direx--debug "Create buffer for %s" (esa-direx:element-name team))
           (esa-direx:mode)
-          (esa-cui:set-active-team (esa-direx:element-name team) t)
-          (esa-cui:stop-process)
+          (esal-set-active-team (esa-direx:element-name team) t)
+          (esal-stop-process)
           (setq-local revert-buffer-function 'direx:revert-buffer)
           (current-buffer)))))
 
@@ -242,8 +252,8 @@
     (let* ((post esa-direx::post)
            (wip (y-or-n-p "[esa] turn back to wip?"))
            (ship (y-or-n-p "[esa] ship?"))
-           (message (read-string "[esa] commit message: " nil '() "Update post.")))
-      (esa-cui:update (esa-direx:post-number post)
+           (message (read-string "[esa] commit message: ")))
+      (esal-update (esa-direx:post-number post)
                       :wip wip
                       :ship ship
                       :message message
@@ -252,13 +262,13 @@
 (defun esa-direx:unlock-current-post ()
   (interactive)
   (let ((post esa-direx::post))
-    (esa-cui:unlock (esa-direx:post-number post))))
+    (esal-unlock (esa-direx:post-number post))))
 
 
 ;;;###autoload
 (defun esa-direx:open-team (team)
   (interactive
-   (list (completing-read "Team: " (esa-cui:teams) nil t nil '())))
+   (list (completing-read "Team: " (esal-teams) nil t nil '())))
   (switch-to-buffer-other-window (esa-direx:ensure-buffer team)))
 
 
