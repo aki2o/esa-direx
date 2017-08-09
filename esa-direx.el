@@ -39,11 +39,9 @@
   "Face for wip post."
   :group 'esa-direx)
 
-(defface esa-direx:locked-post-face
-  '((t (:inherit dired-warning)))
-  "Face for locked post."
-  :group 'esa-direx)
 
+;;;;;;;;;;;
+;; Trees
 
 (defclass esa-direx:element (direx:tree)
   ((name :initarg :name :accessor esa-direx:element-name)
@@ -54,7 +52,8 @@
 (defclass esa-direx:category (esa-direx:element direx:node) ())
 
 (defclass esa-direx:post (esa-direx:element direx:leaf)
-  ((number :initarg :number :accessor esa-direx:post-number)
+  ((title :initarg :title :accessor esa-direx:post-title)
+   (number :initarg :number :accessor esa-direx:post-number)
    (wip :initarg :wip :accessor esa-direx:post-wip-p)
    (locked :initarg :locked :accessor esa-direx:post-locked-p)
    (tags :initarg :tags :accessor esa-direx:post-tags)
@@ -62,12 +61,6 @@
    (local-path :initarg :local-path :accessor esa-direx:post-local-path)
    (created-by :initarg :created-by :accessor esa-direx:post-created-by)
    (updated-by :initarg :updated-by :accessor esa-direx:post-updated-by)))
-
-(defclass esa-direx:team-item (direx:item) ())
-
-(defclass esa-direx:category-item (direx:item) ())
-
-(defclass esa-direx:post-item (direx:item) ())
 
 (defgeneric esa-direx:team-of (element))
 
@@ -77,15 +70,79 @@
 (defmethod esa-direx:team-of ((element esa-direx:element))
   (esa-direx:team-of (direx:item-tree (direx:item-parent (esa-direx:element-item element)))))
 
-(defgeneric esa-direx:full-name (element))
+(defgeneric esa-direx:fullname (element))
 
-(defmethod esa-direx:full-name ((team esa-direx:team))
+(defmethod esa-direx:fullname ((team esa-direx:team))
   "")
 
-(defmethod esa-direx:full-name ((element esa-direx:element))
+(defmethod esa-direx:fullname ((category esa-direx:category))
   (format "%s/%s"
-          (esa-direx:full-name (direx:item-tree (direx:item-parent (esa-direx:element-item element))))
-          (esa-direx:element-name element)))
+          (esa-direx:fullname (direx:item-tree (direx:item-parent (esa-direx:element-item category))))
+          (esa-direx:element-name category)))
+
+(defmethod esa-direx:fullname ((post esa-direx:post))
+  (format "%s/%s"
+          (esa-direx:fullname (direx:item-tree (direx:item-parent (esa-direx:element-item post))))
+          (esa-direx:post-title post)))
+
+(defmethod direx:tree-equals ((x esa-direx:post) y)
+  (or (eq x y)
+      (and (cl-typep y 'esa-direx:post)
+           (equal (esa-direx:fullname x) (esa-direx:fullname y)))))
+
+(defmethod direx:node-children ((team esa-direx:team))
+  (esa-direx::collect-children "/"))
+
+(defmethod direx:node-children ((category esa-direx:category))
+  (esa-direx::collect-children (esa-direx:fullname category)))
+
+(defun esa-direx::collect-children (path)
+  (esal-cd path)
+  (cl-loop for line in (split-string (esal-ls nil) "\n")
+           if (string-match "/\\'" line)
+           collect (esa-direx::make-category
+                    (replace-regexp-in-string "/\\'" "" line))
+           else if (string-match "\\`\\([0-9]+\\):" line)
+           collect (esa-direx::make-post (match-string-no-properties 1 line))))
+
+(defun esa-direx::make-team (name)
+  (make-instance 'esa-direx:team :name name))
+
+(defun esa-direx::make-category (name)
+  (make-instance 'esa-direx:category :name name))
+
+(defun esa-direx::make-post (number)
+  (let* ((json-string (esal-cat number
+                                :json t
+                                :indent nil))
+         (post-stats (json-read-from-string json-string))
+         (title (assoc-default 'name post-stats))
+         (locked (not (eq (assoc-default 'locked post-stats) json-false)))
+         (tags (assoc-default 'tags post-stats))
+         (name (format "%s%s: %s%s"
+                       (if locked "*" "")
+                       number
+                       title
+                       (if (= (length tags) 0)
+                           ""
+                         (concat " " (mapconcat (lambda (s) (format "#%s" s)) tags " "))))))
+    (make-instance 'esa-direx:post
+                   :name name
+                   :title title
+                   :number number
+                   :wip (not (eq (assoc-default 'wip post-stats) json-false))
+                   :locked locked
+                   :tags tags
+                   :url (assoc-default 'url post-stats)
+                   :local-path (assoc-default 'local_path post-stats)
+                   :created-by (assoc-default 'created_by post-stats)
+                   :updated-by (assoc-default 'updated_by post-stats))))
+
+
+;;;;;;;;;;;;;;;;
+;; Tree Items
+
+(defclass esa-direx:team-item (direx:item) ())
 
 (defmethod direx:make-item ((team esa-direx:team) parent)
   (let ((item (make-instance 'esa-direx:team-item
@@ -95,74 +152,100 @@
     (esa-direx--debug "make team : %s" (esa-direx:element-name team))
     item))
 
+(defclass esa-direx:category-item (direx:item) ())
+
+(defvar esa-direx:category-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "R") 'esa-direx:do-move-category)
+    map))
+
 (defmethod direx:make-item ((category esa-direx:category) parent)
   (let ((item (make-instance 'esa-direx:category-item
                              :tree category
                              :parent parent
-                             :face 'esa-direx:category-face)))
+                             :face 'esa-direx:category-face
+                             :keymap esa-direx:category-keymap)))
     (setf (esa-direx:element-item category) item)
-    (esa-direx--debug "make category : %s" (esa-direx:full-name category))
+    (esa-direx--debug "make category : %s" (esa-direx:fullname category))
     item))
 
+(defun esa-direx:do-move-category ()
+  (interactive)
+  (let* ((item (direx:item-at-point))
+         (category (direx:item-tree item))
+         (category-fullnames (split-string (esal-ls "/" :recursive t :category-only t) "\n"))
+         (category-fullname (completing-read (format "Move %s to " (esa-direx:fullname category)) category-fullnames nil nil nil '())))
+    (esal-mv (esa-direx:fullname category) category-fullname)
+    (direx:refresh-whole-tree)
+    (direx:move-to-item-name-part (direx:item-parent item))))
+
+(defclass esa-direx:post-item (direx:item) ())
+
+(defvar esa-direx:post-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "R") 'esa-direx:do-rename-post)
+    (define-key map (kbd "S") 'esa-direx:do-ship-post)
+    (define-key map (kbd "W") 'esa-direx:do-wip-post)
+    (define-key map (kbd "T") 'esa-direx:do-set-tag)
+    (define-key map (kbd "B") 'esa-direx:do-browse-post)
+    map))
+
 (defmethod direx:make-item ((post esa-direx:post) parent)
-  (let* ((face (cond ((esa-direx:post-locked-p post)
-                      'esa-direx:locked-post-face)
-                     ((esa-direx:post-wip-p post)
+  (let* ((face (cond ((esa-direx:post-wip-p post)
                       'esa-direx:wip-post-face)
                      (t
                       'esa-direx:shipped-post-face)))
          (item (make-instance 'esa-direx:post-item
                              :tree post
                              :parent parent
-                             :face face)))
+                             :face face
+                             :keymap esa-direx:post-keymap)))
     (setf (esa-direx:element-item post) item)
-    (esa-direx--debug "make post : %s" (esa-direx:full-name post))
+    (esa-direx--debug "make post : %s" (esa-direx:fullname post))
     item))
 
-(defmethod direx:tree-equals ((x esa-direx:post) y)
-  (or (eq x y)
-      (and (cl-typep y 'esa-direx:post)
-           (equal (esa-direx:full-name x) (esa-direx:full-name y)))))
+(defun esa-direx:do-rename-post ()
+  (interactive)
+  (let* ((item (direx:item-at-point))
+         (post (direx:item-tree item))
+         (name (read-string (format "Rename %s to " (esa-direx:post-title post)))))
+    (esal-update (esa-direx:post-number post) :name name :without-body-p t :lock-keep-p t)
+    (direx:item-refresh-parent item)
+    (direx:move-to-item-name-part item)))
 
-(defmethod direx:node-children ((team esa-direx:team))
-  (esa-direx::collect-children "/"))
+(defun esa-direx:do-ship-post ()
+  (interactive)
+  (let* ((item (direx:item-at-point))
+         (post (direx:item-tree item)))
+    (esal-update (esa-direx:post-number post) :ship t :without-body-p t :lock-keep-p t)
+    (direx:item-refresh-parent item)
+    (direx:move-to-item-name-part item)))
 
-(defmethod direx:node-children ((category esa-direx:category))
-  (esa-direx::collect-children (esa-direx:full-name category)))
+(defun esa-direx:do-wip-post ()
+  (interactive)
+  (let* ((item (direx:item-at-point))
+         (post (direx:item-tree item)))
+    (esal-update (esa-direx:post-number post) :wip t :without-body-p t :lock-keep-p t)
+    (direx:item-refresh-parent item)
+    (direx:move-to-item-name-part item)))
 
-(defun esa-direx::collect-children (path)
-  (esal-cd path)
-  (cl-loop for line in (split-string (esal-ls) "\n")
-           if (string-match "/\\'" line)
-           collect (esa-direx::make-category
-                    (replace-regexp-in-string "/\\'" "" line))
-           else if (string-match "\\`\\([0-9]+\\): \\(.+\\)\\'" line)
-           collect (esa-direx::make-post
-                    path
-                    (match-string-no-properties 1 line)
-                    (match-string-no-properties 2 line))))
+(defun esa-direx:do-set-tag ()
+  (interactive)
+  (let* ((item (direx:item-at-point))
+         (post (direx:item-tree item))
+         (tags '()))
+    (esal-update (esa-direx:post-number post) :tags tags :without-body-p t :lock-keep-p t)
+    (direx:item-refresh-parent item)
+    (direx:move-to-item-name-part item)))
 
-(defun esa-direx::make-team (name)
-  (make-instance 'esa-direx:team :name name))
+(defun esa-direx:do-browse-post ()
+  (interactive)
+  (let* ((item (direx:item-at-point))
+         (post (direx:item-tree item)))
+    (browse-url (esa-direx:post-url post))))
 
-(defun esa-direx::make-category (name)
-  (make-instance 'esa-direx:category :name name))
-
-(defun esa-direx::make-post (category-path number name)
-  (let* ((json-string (esal-cat (concat category-path "/" number)
-                                :json t
-                                :indent nil))
-         (post-stats (json-read-from-string json-string)))
-    (make-instance 'esa-direx:post
-                   :name name
-                   :number number
-                   :wip (not (eq (assoc-default 'wip post-stats) json-false))
-                   :locked (not (eq (assoc-default 'locked post-stats) json-false))
-                   :tags (assoc-default 'tags post-stats)
-                   :url (assoc-default 'url post-stats)
-                   :local-path (assoc-default 'local_path post-stats)
-                   :created-by (assoc-default 'created_by post-stats)
-                   :updated-by (assoc-default 'updated_by post-stats))))
+;; (defmethod direx:item-refresh (item esa-direx:category-item)
+;;   )
 
 (defmethod direx:generic-find-item ((item esa-direx:team-item) not-this-window)
   (direx:toggle-item item))
@@ -240,24 +323,21 @@
   (direx:ensure-buffer-for-root (esa-direx::make-team "mf")))
 
 (defun esa-direx:revert-current-post (ignore-auto noconfirm)
-  (if (not (y-or-n-p "[esa] sync current post?"))
-      (message "[esa] quit.")
-    ))
+  (if (not (y-or-n-p "[esa] Sync current post?"))
+      (message "[esa] Quit.")
+    (let* ((post esa-direx:post))
+      (esal-sync (esa-direx:post-number post) :by-number t))))
 
 (defun esa-direx:update-current-post (&optional arg)
   (interactive "p")
   (save-buffer arg)
-  (if (not (y-or-n-p "[esa] update current post?"))
-      (message "[esa] quit.")
+  (if (not (y-or-n-p "[esa] Update current post?"))
+      (message "[esa] Quit.")
     (let* ((post esa-direx::post)
-           (wip (y-or-n-p "[esa] turn back to wip?"))
-           (ship (y-or-n-p "[esa] ship?"))
-           (message (read-string "[esa] commit message: ")))
+           (message (read-string "[esa] Commit message: ")))
       (esal-update (esa-direx:post-number post)
-                      :wip wip
-                      :ship ship
-                      :message message
-                      :lock-keep-p t))))
+                   :message message
+                   :lock-keep-p t))))
 
 (defun esa-direx:unlock-current-post ()
   (interactive)
