@@ -19,6 +19,14 @@
   :group 'direx
   :prefix "esa-direx:")
 
+(defcustom esa-direx:preferred-selection-method 'helm
+  "Symbol for a preferred feature used for various selection flow."
+  :type '(choice (const helm)
+                 (const anything)
+                 (const default)
+                 (const nil))
+  :group 'esa-direx)
+
 (defface esa-direx:team-face
   '((t (:inherit dired-directory)))
   "Face for team."
@@ -38,6 +46,56 @@
   '((t (:inherit dired-ignored)))
   "Face for wip post."
   :group 'esa-direx)
+
+
+(defvar esa-direx::post nil)
+(defvar esa-direx::tags-hash (make-hash-table :test 'equal))
+
+
+(defsubst esa-direx::regist-tags (teamnm tags)
+  (let ((curr-tags (gethash teamnm esa-direx::tags-hash)))
+    (loop for tag in tags
+          do (pushnew tag curr-tags :test 'equal))
+    (puthash teamnm curr-tags esa-direx::tags-hash)))
+
+(defsubst esa-direx::tags-of (teamnm)
+  (gethash teamnm esa-direx::tags-hash))
+
+(defun* esa-direx::select-something (&key description candidates method multiple require default)
+  (esa-direx--debug* "start select something. description[%s] method[%s] multiple[%s] require[%s] default[%s]"
+                     description method multiple require default)
+  (let* ((pref (or method esa-direx:preferred-selection-method))
+         (mtd (or (when (and (eq pref 'helm) (featurep 'helm))         'helm)
+                  (when (and (eq pref 'anything) (featurep 'anything)) 'anything)
+                  (when (eq pref 'default)                             'completing-read)
+                  (when (featurep 'helm)                               'helm)
+                  (when (featurep 'anything)                           'anything)
+                  'completing-read))
+         (src `((name . ,description)
+                (candidates . ,candidates)
+                (candidate-number-limit . 999)
+                (action . (lambda (cand)
+                            (or (when (not ,multiple)      cand)
+                                (when (eq ',mtd 'helm)     (helm-marked-candidates))
+                                (when (eq ',mtd 'anything) (anything-marked-candidates))
+                                (list cand))))
+                (migemo)))
+         (args (case mtd
+                 (helm            `(:sources ,src))
+                 (anything        `(:sources ,src))
+                 (completing-read `(,(concat description ": ") ,candidates nil t nil '() ,default))))
+         (selected (loop while t
+                         for selected = (apply mtd args)
+                         if selected return selected
+                         if (not require) return selected
+                         do (progn (message "[esa] Have to select something")
+                                   (sleep-for 2)))))
+    (esa-direx--info "finished select something : %s" selected)
+    (if (and multiple
+             (not (listp selected)))
+        (progn (esa-direx--debug "convert result of select something to list")
+               (list selected))
+      selected)))
 
 
 ;;;;;;;;;;;
@@ -84,6 +142,16 @@
   (format "%s/%s"
           (esa-direx:fullname (direx:item-tree (direx:item-parent (esa-direx:element-item post))))
           (esa-direx:post-title post)))
+
+(defmethod direx:tree-equals ((x esa-direx:team) y)
+  (or (eq x y)
+      (and (cl-typep y 'esa-direx:team)
+           (equal (esa-direx:element-name x) (esa-direx:element-name y)))))
+
+(defmethod direx:tree-equals ((x esa-direx:category) y)
+  (or (eq x y)
+      (and (cl-typep y 'esa-direx:category)
+           (equal (esa-direx:fullname x) (esa-direx:fullname y)))))
 
 (defmethod direx:tree-equals ((x esa-direx:post) y)
   (or (eq x y)
@@ -172,10 +240,12 @@
 (defun esa-direx:do-move-category ()
   (interactive)
   (let* ((item (direx:item-at-point))
-         (category (direx:item-tree item))
+         (element (direx:item-tree item))
+         (element-fullname (esa-direx:fullname element))
          (category-fullnames (split-string (esal-ls "/" :recursive t :category-only t) "\n"))
-         (category-fullname (completing-read (format "Move %s to " (esa-direx:fullname category)) category-fullnames nil nil nil '())))
-    (esal-mv (esa-direx:fullname category) category-fullname)
+         (category-fullname (esa-direx::select-something :description (format "Move %s to " element-fullname)
+                                                         :candidates category-fullnames)))
+    (esal-mv element-fullname category-fullname)
     (direx:refresh-whole-tree)
     (direx:move-to-item-name-part (direx:item-parent item))))
 
@@ -183,7 +253,8 @@
 
 (defvar esa-direx:post-keymap
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "R") 'esa-direx:do-rename-post)
+    (define-key map (kbd "R") 'esa-direx:do-move-category)
+    (define-key map (kbd "M") 'esa-direx:do-rename-post)
     (define-key map (kbd "S") 'esa-direx:do-ship-post)
     (define-key map (kbd "W") 'esa-direx:do-wip-post)
     (define-key map (kbd "T") 'esa-direx:do-set-tag)
@@ -201,6 +272,9 @@
                              :face face
                              :keymap esa-direx:post-keymap)))
     (setf (esa-direx:element-item post) item)
+    (esa-direx::regist-tags
+     (esa-direx:element-name (esa-direx:team-of post))
+     (esa-direx:post-tags post))
     (esa-direx--debug "make post : %s" (esa-direx:fullname post))
     item))
 
@@ -233,7 +307,11 @@
   (interactive)
   (let* ((item (direx:item-at-point))
          (post (direx:item-tree item))
-         (tags '()))
+         (team (esa-direx:team-of post))
+         (tags (esa-direx::select-something :description "Tags: "
+                                            :candidates (esa-direx::tags-of (esa-direx:element-name team))
+                                            :multiple t
+                                            :default (esa-direx:post-tags post))))
     (esal-update (esa-direx:post-number post) :tags tags :without-body-p t :lock-keep-p t)
     (direx:item-refresh-parent item)
     (direx:move-to-item-name-part item)))
@@ -243,9 +321,6 @@
   (let* ((item (direx:item-at-point))
          (post (direx:item-tree item)))
     (browse-url (esa-direx:post-url post))))
-
-;; (defmethod direx:item-refresh (item esa-direx:category-item)
-;;   )
 
 (defmethod direx:generic-find-item ((item esa-direx:team-item) not-this-window)
   (direx:toggle-item item))
@@ -290,7 +365,6 @@
     (esa-direx::setup-post-buffer (display-buffer (find-file-noselect filename))
                                   post)))
 
-(defvar esa-direx::post nil)
 (defun esa-direx::setup-post-buffer (buf post)
   (esa-direx--debug "Start setup post buffer : number[%s] buf[%s]"
                     (esa-direx:post-number post) buf)
@@ -300,6 +374,7 @@
     (setq-local revert-buffer-function 'esa-direx:revert-current-post)
     (local-set-key [remap save-buffer] 'esa-direx:update-current-post)
     (setq-local kill-buffer-hook '(esa-direx:unlock-current-post))
+    (rename-buffer (format "[esa] %s: %s" (esa-direx:post-number post) (esa-direx:post-title post)))
     (current-buffer)))
 
 (define-derived-mode esa-direx:mode direx:direx-mode "Direx Esa")
@@ -323,26 +398,34 @@
   (direx:ensure-buffer-for-root (esa-direx::make-team "mf")))
 
 (defun esa-direx:revert-current-post (ignore-auto noconfirm)
-  (if (not (y-or-n-p "[esa] Sync current post?"))
-      (message "[esa] Quit.")
-    (let* ((post esa-direx:post))
-      (esal-sync (esa-direx:post-number post) :by-number t))))
+  (interactive)
+  (let ((post esa-direx::post)
+        (revert-buffer-function nil))
+    (revert-buffer)
+    (when post
+      (esa-direx::setup-post-buffer (current-buffer) post)
+      (if (not (y-or-n-p "[esa] Sync current post?"))
+          (message "[esa] Quit.")
+        (esal-sync (esa-direx:post-number post) :by-number t)))))
 
 (defun esa-direx:update-current-post (&optional arg)
   (interactive "p")
   (save-buffer arg)
-  (if (not (y-or-n-p "[esa] Update current post?"))
-      (message "[esa] Quit.")
-    (let* ((post esa-direx::post)
-           (message (read-string "[esa] Commit message: ")))
-      (esal-update (esa-direx:post-number post)
-                   :message message
-                   :lock-keep-p t))))
+  (when esa-direx::post
+    (if (not (y-or-n-p "[esa] Update current post?"))
+        (message "[esa] Quit.")
+      (let* ((post esa-direx::post)
+             (message (read-string "[esa] Commit message: ")))
+        (esal-update (esa-direx:post-number post)
+                     :message message
+                     :lock-keep-p t)))))
 
 (defun esa-direx:unlock-current-post ()
   (interactive)
-  (let ((post esa-direx::post))
-    (esal-unlock (esa-direx:post-number post))))
+  (if (not esa-direx::post)
+      (message "[esa] Current buffer has not post.")
+    (let ((post esa-direx::post))
+      (esal-unlock (esa-direx:post-number post)))))
 
 
 ;;;###autoload
