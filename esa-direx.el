@@ -206,6 +206,12 @@
                    :created-by (assoc-default 'created_by post-stats)
                    :updated-by (assoc-default 'updated_by post-stats))))
 
+(defun esa-direx::make-new-post (name)
+  (make-instance 'esa-direx:post
+                 :name (format ": %s" name)
+                 :title name
+                 :wip t))
+
 
 ;;;;;;;;;;;;;;;;
 ;; Tree Items
@@ -225,6 +231,7 @@
 (defvar esa-direx:category-keymap
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "R") 'esa-direx:do-move-category)
+    (define-key map (kbd "+") 'esa-direx:do-make-category)
     map))
 
 (defmethod direx:make-item ((category esa-direx:category) parent)
@@ -249,11 +256,29 @@
     (direx:refresh-whole-tree)
     (direx:move-to-item-name-part (direx:item-parent item))))
 
+(defun esa-direx:do-make-category ()
+  (interactive)
+  (let* ((parent-item (direx:item-at-point))
+         (name (read-string "Category name: "))
+         (category (cond ((= (length name) 0)
+                          (error "Require name!"))
+                         ((loop for i in (direx:item-children parent-item)
+                                if (string= (direx:item-name i) name) return t
+                                finally return nil)
+                          (error "Already exists %s!" name))
+                         (t
+                          (esa-direx::make-category name))))
+         (item (direx:make-item category parent-item)))
+    (save-excursion
+      (goto-char (overlay-end (direx:item-overlay item)))
+      (direx:item-insert item))))
+
 (defclass esa-direx:post-item (direx:item) ())
 
 (defvar esa-direx:post-keymap
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "R") 'esa-direx:do-move-category)
+    (define-key map (kbd "N") 'esa-direx:do-new-post)
     (define-key map (kbd "M") 'esa-direx:do-rename-post)
     (define-key map (kbd "S") 'esa-direx:do-ship-post)
     (define-key map (kbd "W") 'esa-direx:do-wip-post)
@@ -277,6 +302,18 @@
      (esa-direx:post-tags post))
     (esa-direx--debug "make post : %s" (esa-direx:fullname post))
     item))
+
+(defun esa-direx:do-new-post ()
+  (interactive)
+  (let* ((item (direx:item-at-point))
+         (parent (direx:item-parent item))
+         (category (direx:item-tree parent))
+         (name (read-string "Post name: "))
+         (post (esa-direx::make-new-post name))
+         (new-item (direx:make-item post parent)))
+    (save-excursion
+      (goto-char (overlay-end (direx:item-overlay new-item)))
+      (direx:item-insert new-item))))
 
 (defun esa-direx:do-rename-post ()
   (interactive)
