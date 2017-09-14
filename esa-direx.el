@@ -208,7 +208,7 @@
 
 (defun esa-direx::make-new-post (name)
   (make-instance 'esa-direx:post
-                 :name (format ": %s" name)
+                 :name (format "NEW: %s" name)
                  :title name
                  :wip t))
 
@@ -232,6 +232,7 @@
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "R") 'esa-direx:do-move-category)
     (define-key map (kbd "+") 'esa-direx:do-make-category)
+    (define-key map (kbd "N") 'esa-direx:do-new-post)
     map))
 
 (defmethod direx:make-item ((category esa-direx:category) parent)
@@ -258,20 +259,23 @@
 
 (defun esa-direx:do-make-category ()
   (interactive)
-  (let* ((parent-item (direx:item-at-point))
-         (name (read-string "Category name: "))
+  (let* ((parent (direx:item-at-point))
+         (name (if (not (esa-direx:category-item-p parent))
+                   (error "This node is not category!")
+                 (read-string "Category name: ")))
          (category (cond ((= (length name) 0)
                           (error "Require name!"))
-                         ((loop for i in (direx:item-children parent-item)
+                         ((loop for i in (direx:item-children parent)
                                 if (string= (direx:item-name i) name) return t
                                 finally return nil)
                           (error "Already exists %s!" name))
                          (t
                           (esa-direx::make-category name))))
-         (item (direx:make-item category parent-item)))
+         (item (direx:make-item category parent)))
     (save-excursion
-      (goto-char (overlay-end (direx:item-overlay item)))
-      (direx:item-insert item))))
+      (goto-char (overlay-end (direx:item-overlay parent)))
+      (direx:item-insert item))
+    (direx:move-to-item-name-part item)))
 
 (defclass esa-direx:post-item (direx:item) ())
 
@@ -306,14 +310,26 @@
 (defun esa-direx:do-new-post ()
   (interactive)
   (let* ((item (direx:item-at-point))
-         (parent (direx:item-parent item))
-         (category (direx:item-tree parent))
-         (name (read-string "Post name: "))
-         (post (esa-direx::make-new-post name))
+         (parent (if (esa-direx:category-item-p item)
+                     item
+                   (direx:item-parent item)))
+         (name (if (not (esa-direx:category-item-p parent))
+                   (error "Not found category for new post!")
+                 (read-string "Post name: ")))
+         (post (cond ((= (length name) 0)
+                      (error "Require name!"))
+                     ((loop for i in (direx:item-children parent)
+                            if (string= (direx:item-name i) name) return t
+                            finally return nil)
+                      (error "Already exists %s!" name))
+                     (t
+                      (esa-direx::make-new-post name))))
          (new-item (direx:make-item post parent)))
     (save-excursion
-      (goto-char (overlay-end (direx:item-overlay new-item)))
-      (direx:item-insert new-item))))
+      (goto-char (overlay-end (direx:item-overlay parent)))
+      (direx:item-insert new-item))
+    (direx:move-to-item-name-part new-item)
+    (esa-direx::ensure-buffer post 'find-file-other-window)))
 
 (defun esa-direx:do-rename-post ()
   (interactive)
@@ -356,8 +372,11 @@
 (defun esa-direx:do-browse-post ()
   (interactive)
   (let* ((item (direx:item-at-point))
-         (post (direx:item-tree item)))
-    (browse-url (esa-direx:post-url post))))
+         (post (direx:item-tree item))
+         (url (esa-direx:post-url post)))
+    (if (not url)
+        (error "This post is not yet uploaded!")
+      (browse-url url))))
 
 (defmethod direx:generic-find-item ((item esa-direx:team-item) not-this-window)
   (direx:toggle-item item))
@@ -378,29 +397,32 @@
   (direx:toggle-item item))
 
 (defmethod direx:generic-find-item ((item esa-direx:post-item) not-this-window)
-  (let* ((post (direx:item-tree item))
-         (filename (esa-direx:post-local-path post)))
-    (esal-lock (esa-direx:post-number post))
-    (esa-direx::setup-post-buffer (if not-this-window
-                                      (find-file-other-window filename)
-                                    (find-file filename))
-                                  post)))
+  (esa-direx::ensure-buffer
+   (direx:item-tree item)
+   (if not-this-window 'find-file-other-window 'find-file)))
 
 (defmethod direx:generic-view-item ((item esa-direx:post-item) not-this-window)
-  (let* ((post (direx:item-tree item))
-         (filename (esa-direx:post-local-path post)))
-    (esal-lock (esa-direx:post-number post))
-    (esa-direx::setup-post-buffer (if not-this-window
-                                      (view-file-other-window filename)
-                                    (view-file filename))
-                                  post)))
+  (esa-direx::ensure-buffer
+   (direx:item-tree item)
+   (if not-this-window 'view-file-other-window 'view-file)))
 
 (defmethod direx:generic-display-item ((item esa-direx:post-item) not-this-window)
-  (let* ((post (direx:item-tree item))
-         (filename (esa-direx:post-local-path post)))
-    (esal-lock (esa-direx:post-number post))
-    (esa-direx::setup-post-buffer (display-buffer (find-file-noselect filename))
-                                  post)))
+  (display-buffer (esa-direx::ensure-buffer (direx:item-tree item) 'find-file-noselect)))
+
+(defun esa-direx::ensure-buffer (post open-func)
+  (let* ((filepath (esa-direx:post-local-path post))
+         (number (esa-direx:post-number post))
+         (buf (if filepath
+                  (funcall open-func filepath)
+                (get-buffer-create (esa-direx::buffer-name post)))))
+    (when number
+      (esal-lock number))
+    (esa-direx::setup-post-buffer buf post)))
+
+(defun esa-direx::buffer-name (post)
+  (format "[esa] %s: %s"
+          (or (esa-direx:post-number post) "NEW")
+          (esa-direx:post-title post)))
 
 (defun esa-direx::setup-post-buffer (buf post)
   (esa-direx--debug "Start setup post buffer : number[%s] buf[%s]"
@@ -411,7 +433,7 @@
     (setq-local revert-buffer-function 'esa-direx:revert-current-post)
     (local-set-key [remap save-buffer] 'esa-direx:update-current-post)
     (setq-local kill-buffer-hook '(esa-direx:unlock-current-post))
-    (rename-buffer (format "[esa] %s: %s" (esa-direx:post-number post) (esa-direx:post-title post)))
+    (rename-buffer (esa-direx::buffer-name post))
     (current-buffer)))
 
 (define-derived-mode esa-direx:mode direx:direx-mode "Direx Esa")
@@ -436,14 +458,16 @@
 
 (defun esa-direx:revert-current-post (ignore-auto noconfirm)
   (interactive)
-  (let ((post esa-direx::post)
-        (revert-buffer-function nil))
+  (let* ((post esa-direx::post)
+         (number (esa-direx:post-number post))
+         (revert-buffer-function nil))
     (revert-buffer)
     (when post
       (esa-direx::setup-post-buffer (current-buffer) post)
-      (if (not (y-or-n-p "[esa] Sync current post?"))
-          (message "[esa] Quit.")
-        (esal-sync (esa-direx:post-number post) :by-number t)))))
+      (when number
+        (if (not (y-or-n-p "[esa] Sync current post?"))
+            (message "[esa] Quit.")
+          (esal-sync number :by-number t))))))
 
 (defun esa-direx:update-current-post (&optional arg)
   (interactive "p")
