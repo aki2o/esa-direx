@@ -415,9 +415,9 @@
          (buf (if filepath
                   (funcall open-func filepath)
                 (get-buffer-create (esa-direx::buffer-name post)))))
+    (esa-direx::setup-post-buffer buf post)
     (when number
-      (esal-lock number))
-    (esa-direx::setup-post-buffer buf post)))
+      (esal-lock number))))
 
 (defun esa-direx::buffer-name (post)
   (format "[esa] %s: %s"
@@ -454,7 +454,7 @@
   (esa-direx::get-buffer team))
 
 (defun esa-direx:ensure-buffer (team)
-  (direx:ensure-buffer-for-root (esa-direx::make-team "mf")))
+  (direx:ensure-buffer-for-root (esa-direx::make-team team)))
 
 (defun esa-direx:revert-current-post (ignore-auto noconfirm)
   (interactive)
