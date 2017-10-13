@@ -467,7 +467,7 @@
       (when number
         (if (not (y-or-n-p "[esa] Sync current post?"))
             (message "[esa] Quit.")
-          (esal-sync number :by-number t))))))
+          (esal-sync (list number) :by-number t))))))
 
 (defun esa-direx:update-current-post (&optional arg)
   (interactive "p")
