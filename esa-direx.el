@@ -488,12 +488,40 @@
     (let ((post esa-direx::post))
       (esal-unlock (esa-direx:post-number post)))))
 
+(defun esa-direx:browse-current-post ()
+  (interactive)
+  (if (not esa-direx::post)
+      (message "[esa] Current buffer has not post.")
+    (let ((post esa-direx::post))
+      (browse-url (esa-direx:post-url post)))))
+
+(defun esa-direx:jump-to-current-category ()
+  (interactive)
+  (if (not esa-direx::post)
+      (message "[esa] Current buffer has not post.")
+    (let* ((post esa-direx::post)
+           (buf (esa-direx:ensure-buffer (esa-direx:element-name (esa-direx:team-of post)))))
+    (with-current-buffer buf
+      (direx:goto-item-for-tree-1 post))
+    (switch-to-buffer-other-window buf))))
+
 
 ;;;###autoload
 (defun esa-direx:open-team (team)
   (interactive
    (list (completing-read "Team: " (esal-teams) nil t nil '())))
   (switch-to-buffer-other-window (esa-direx:ensure-buffer team)))
+
+
+(defadvice direx:jump-to-directory-other-window (around esa-direx:open-team activate)
+  (if esa-direx::post
+      (esa-direx:jump-to-current-category)
+    ad-do-it))
+
+(defadvice direx-project:jump-to-project-root-other-window (around esa-direx:open-team activate)
+  (if esa-direx::post
+      (esa-direx:jump-to-current-category)
+    ad-do-it))
 
 
 (provide 'esa-direx)
